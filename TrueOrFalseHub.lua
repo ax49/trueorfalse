@@ -2,7 +2,7 @@
 -- Auto-finds SIGN on any map, calls Cloudflare Worker for AI answer
 
 local WORKER_URL = "https://billowing-sun-30dd.azizxqa.workers.dev"
-local QUESTIONS_FOLDER = game.Workspace.CustomQuestions
+local QUESTIONS_FOLDER = game.Workspace:FindFirstChild("CustomQuestions")
 
 -- ============================================================
 -- FIND SIGN DYNAMICALLY (works on any map)
@@ -113,6 +113,7 @@ local mouse = game:GetService("Players").LocalPlayer:GetMouse()
 -- LOCAL LOOKUP
 -- ============================================================
 local function findAnswerLocal(questionText)
+    if not QUESTIONS_FOLDER then return nil end
     local norm = normalize(questionText)
     for _, child in ipairs(QUESTIONS_FOLDER:GetChildren()) do
         if child:IsA("StringValue") and normalize(child.Value) == norm then
