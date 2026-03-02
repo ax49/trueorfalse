@@ -85,7 +85,7 @@ local dCloseTx = tx("X", WHITE, 11)
 local dAnsBox  = sq(true,  SURF);    local dAnsBrd  = sq(false, BRD)
 local dAnsText = tx("?", YELLOW, 42); local dAnsLbl = tx("ANSWER", SUB, 10)
 local dQBox    = sq(true,  SURF);    local dQBrd    = sq(false, BRD)
-local dQText   = tx("Waiting...", Color3.fromRGB(180,190,220), 11)
+local dQText   = tx("Waiting...", Color3.fromRGB(180,190,220), 10)
 local dQLbl    = tx("CURRENT QUESTION", SUB, 10)
 local dStatusBG = sq(true, Color3.fromRGB(15,17,28))
 local dStatusTx = tx("Waiting for question...", SUB, 10)
@@ -94,7 +94,7 @@ local dStatusTx = tx("Waiting for question...", SUB, 10)
 -- LAYOUT
 -- ============================================================
 local WX, WY   = 20, 20
-local WW, WH   = 430, 270
+local WW, WH   = 430, 320
 local TH       = 28; local PAD = 10
 local running  = true
 local dragging = false
@@ -217,7 +217,7 @@ local function step()
     dCloseTx.Position=Vector2.new(wx+WW-25,wy+8); dCloseTx.Visible=true
 
     -- Answer box
-    local ansY = wy+TH+PAD; local ansH = 95
+    local ansY = wy+TH+PAD; local ansH = 85
     dAnsBox.Position=Vector2.new(wx+PAD,ansY);      dAnsBox.Size=Vector2.new(WW-PAD*2,ansH); dAnsBox.Visible=true
     dAnsBrd.Position=Vector2.new(wx+PAD,ansY);      dAnsBrd.Size=Vector2.new(WW-PAD*2,ansH); dAnsBrd.Visible=true
     dAnsLbl.Position=Vector2.new(wx+PAD+8,ansY+6);  dAnsLbl.Visible=true
@@ -240,7 +240,7 @@ local function step()
     dQBox.Position=Vector2.new(wx+PAD,qY);    dQBox.Size=Vector2.new(WW-PAD*2,qH); dQBox.Visible=true
     dQBrd.Position=Vector2.new(wx+PAD,qY);    dQBrd.Size=Vector2.new(WW-PAD*2,qH); dQBrd.Visible=true
     dQLbl.Position=Vector2.new(wx+PAD+8,qY+6); dQLbl.Visible=true
-    dQText.Text=lastQuestion=="" and "Waiting for question..." or wrapText(lastQuestion,58)
+    dQText.Text=lastQuestion=="" and "Waiting for question..." or wrapText(lastQuestion,52)
     dQText.Position=Vector2.new(wx+PAD+8,qY+20); dQText.Visible=true
 
     -- Status
