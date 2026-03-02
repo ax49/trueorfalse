@@ -1,10 +1,11 @@
--- True or False Answer Hub
--- Reads current question from SIGN, matches against CustomQuestions, shows TRUE/FALSE
+-- True or False Answer Hub v2
+-- Reads question from SIGN, calls Cloudflare Worker for AI answer
 -- Drawing API overlay for Matcha LuaVM
 
 -- ============================================================
--- PATHS
+-- CONFIG - replace with your worker URL when ready
 -- ============================================================
+local WORKER_URL = "https://billowing-sun-30dd.azizxqa.workers.dev" -- e.g. "https://your-worker.workers.dev"
 local SIGN_PATH = game.Workspace.CityMap.Model.screen.SurfaceGui.SIGN
 local QUESTIONS_FOLDER = game.Workspace.CustomQuestions
 
@@ -13,23 +14,40 @@ local QUESTIONS_FOLDER = game.Workspace.CustomQuestions
 -- ============================================================
 local function sq(fill, col)
     local s = Drawing.new("Square")
-    s.Filled = fill
-    s.Color = col or Color3.new(1,1,1)
-    s.Transparency = 1
-    s.Thickness = 1
-    s.Visible = false
+    s.Filled = fill; s.Color = col or Color3.new(1,1,1)
+    s.Transparency = 1; s.Thickness = 1; s.Visible = false
     return s
 end
 
 local function tx(str, col, sz)
     local t = Drawing.new("Text")
-    t.Text = str or ""
-    t.Color = col or Color3.new(1,1,1)
-    t.Size = sz or 13
-    t.Outline = true
-    t.Font = Drawing.Fonts.System
-    t.Visible = false
+    t.Text = str or ""; t.Color = col or Color3.new(1,1,1)
+    t.Size = sz or 13; t.Outline = true
+    t.Font = Drawing.Fonts.System; t.Visible = false
     return t
+end
+
+local function hov(mx, my, x, y, w, h)
+    return mx >= x and mx <= x+w and my >= y and my <= y+h
+end
+
+local function normalize(str)
+    if not str then return "" end
+    return str:lower():gsub("%s+", " "):match("^%s*(.-)%s*$")
+end
+
+local function wrapText(str, maxChars)
+    if #str <= maxChars then return str end
+    local result = ""; local lineLen = 0
+    for word in str:gmatch("%S+") do
+        if lineLen + #word + 1 > maxChars then
+            result = result .. "\n" .. word; lineLen = #word
+        else
+            result = result == "" and word or result .. " " .. word
+            lineLen = lineLen + #word + 1
+        end
+    end
+    return result
 end
 
 -- ============================================================
@@ -44,125 +62,99 @@ local BG     = Color3.fromRGB(12, 14, 22)
 local SURF   = Color3.fromRGB(20, 23, 36)
 local BRD    = Color3.fromRGB(40, 46, 72)
 local ACC    = Color3.fromRGB(90, 165, 255)
+local SUB    = Color3.fromRGB(100, 115, 155)
 
 -- ============================================================
 -- DRAWINGS
 -- ============================================================
-local dCrust   = sq(false, BLACK)
-local dBrd     = sq(false, BRD)
-local dBG      = sq(true,  BG)
-local dTitleBG = sq(true,  SURF)
-local dAccBar  = sq(true,  ACC)
-local dTitle   = tx("TRUE OR FALSE HUB", WHITE, 12)
-
--- Close button
+local dCrust   = sq(false, BLACK);  local dBrd    = sq(false, BRD)
+local dBG      = sq(true,  BG);     local dTitleBG= sq(true,  SURF)
+local dAccBar  = sq(true,  ACC);    local dTitle  = tx("TRUE OR FALSE HUB", WHITE, 12)
 local dCloseBG = sq(true,  Color3.fromRGB(180,50,50))
 local dCloseTx = tx("X", WHITE, 11)
-
--- Answer display
-local dAnsBox  = sq(true,  SURF)
-local dAnsBrd  = sq(false, BRD)
-local dAnsText = tx("WAITING...", YELLOW, 36)
-local dAnsLbl  = tx("ANSWER", Color3.fromRGB(100,115,155), 10)
-
--- Question display
-local dQBox    = sq(true,  SURF)
-local dQBrd    = sq(false, BRD)
-local dQText   = tx("No question detected", Color3.fromRGB(180,190,220), 11)
-local dQLbl    = tx("CURRENT QUESTION", Color3.fromRGB(100,115,155), 10)
-
--- Status
-local dStatusBG = sq(true, SURF)
-local dStatusTx = tx("Scanning...", Color3.fromRGB(100,115,155), 10)
+local dAnsBox  = sq(true,  SURF);   local dAnsBrd  = sq(false, BRD)
+local dAnsText = tx("?", YELLOW, 42); local dAnsLbl = tx("ANSWER", SUB, 10)
+local dQBox    = sq(true,  SURF);   local dQBrd   = sq(false, BRD)
+local dQText   = tx("Waiting...", Color3.fromRGB(180,190,220), 11)
+local dQLbl    = tx("CURRENT QUESTION", SUB, 10)
+local dStatusBG= sq(true, Color3.fromRGB(15,17,28))
+local dStatusTx= tx("Waiting for question...", SUB, 10)
+local dLoadTx  = tx("", ACC, 11)  -- "Asking AI..." indicator
 
 -- ============================================================
 -- LAYOUT
 -- ============================================================
 local WX, WY   = 20, 20
-local WW, WH   = 420, 260
-local TH       = 28
-local PAD      = 10
+local WW, WH   = 430, 270
+local TH       = 28; local PAD = 10
 local running  = true
 local dragging = false
 local dragX, dragY = 0, 0
 local m1held   = false
 
-local function hov(mx, my, x, y, w, h)
-    return mx >= x and mx <= x+w and my >= y and my <= y+h
-end
+-- ============================================================
+-- STATE
+-- ============================================================
+local lastQuestion  = ""
+local currentAnswer = nil  -- true, false, or nil
+local asking        = false
+local mouse = game:GetService("Players").LocalPlayer:GetMouse()
 
 -- ============================================================
--- ANSWER LOOKUP
+-- LOCAL LOOKUP (CustomQuestions fallback)
 -- ============================================================
-local function normalize(str)
-    if not str then return "" end
-    return str:lower():gsub("%s+", " "):match("^%s*(.-)%s*$")
-end
-
-local function findAnswer(questionText)
-    if not questionText or questionText == "" then return nil end
+local function findAnswerLocal(questionText)
     local norm = normalize(questionText)
     for _, child in ipairs(QUESTIONS_FOLDER:GetChildren()) do
-        if child:IsA("StringValue") then
-            if normalize(child.Value) == norm then
-                local answer = child:GetAttribute("CorrectAnswer")
-                if answer ~= nil then
-                    return answer -- true or false (bool)
-                end
-            end
+        if child:IsA("StringValue") and normalize(child.Value) == norm then
+            local answer = child:GetAttribute("CorrectAnswer")
+            if answer ~= nil then return answer end
         end
     end
     return nil
 end
 
 -- ============================================================
--- QUESTION WRAP (fit text into box)
+-- AI LOOKUP via Cloudflare Worker
 -- ============================================================
-local function wrapText(str, maxChars)
-    if #str <= maxChars then return str end
-    local result = ""
-    local lineLen = 0
-    for word in str:gmatch("%S+") do
-        if lineLen + #word + 1 > maxChars then
-            result = result .. "\n" .. word
-            lineLen = #word
-        else
-            if result == "" then
-                result = word
-            else
-                result = result .. " " .. word
-            end
-            lineLen = lineLen + #word + 1
-        end
+local function askAI(question)
+    if WORKER_URL == "" then return nil end
+    asking = true
+    -- URL-encode the question (basic)
+    local encoded = question:gsub(" ", "+"):gsub("([^%w%+%-%.%_%~])", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end)
+    local url = WORKER_URL .. "?q=" .. encoded
+    local ok, result = pcall(function()
+        return game:HttpGet(url)
+    end)
+    asking = false
+    if not ok or not result then return nil end
+    result = result:upper():gsub("%s+", "")
+    if result:find("TRUE") then return true
+    elseif result:find("FALSE") then return false
     end
-    return result
+    return nil
 end
 
 -- ============================================================
--- MAIN LOOP
+-- MAIN STEP
 -- ============================================================
-local mouse = game:GetService("Players").LocalPlayer:GetMouse()
-local lastQuestion = ""
-local currentAnswer = nil
-
 local function step()
     repeat task.wait() until isrbxactive()
 
     local mx, my = mouse.X, mouse.Y
-    local now = os.clock()
 
     local m1now = iskeypressed(0x01)
     local clicked = m1now and not m1held
     m1held = m1now
 
-    -- Drag
     if dragging then
         if m1now then WX = mx - dragX; WY = my - dragY
         else dragging = false end
         clicked = false
     end
 
-    -- Title bar
     if clicked and hov(mx, my, WX, WY, WW, TH) then
         if hov(mx, my, WX+WW-30, WY+5, 22, 18) then
             running = false; return
@@ -175,94 +167,84 @@ local function step()
     local ok, currentQ = pcall(function() return SIGN_PATH.Text end)
     if not ok or not currentQ then currentQ = "" end
 
-    -- Only re-lookup when question changes
-    if currentQ ~= lastQuestion then
+    -- Filter invalid states: question numbers (#8), short text, failed fetches
+    if currentQ == "failed to fetch text" or #currentQ < 20 or currentQ:sub(1,1) == "#" then
+        currentQ = ""
+    end
+
+    -- New question detected
+    if currentQ ~= lastQuestion and not asking then
         lastQuestion = currentQ
-        if currentQ == "" or currentQ == "failed to fetch text" then
-            currentAnswer = nil
-        else
-            currentAnswer = findAnswer(currentQ)
+        currentAnswer = nil
+        if currentQ ~= "" then
+            -- Try local lookup first (instant)
+            local localAnswer = findAnswerLocal(currentQ)
+            if localAnswer ~= nil then
+                currentAnswer = localAnswer
+            else
+                -- Fall back to AI
+                spawn(function()
+                    currentAnswer = askAI(currentQ)
+                end)
+            end
         end
     end
 
     -- ---- DRAW ----
     local wx, wy = WX, WY
 
-    -- Window
-    dCrust.Position  = Vector2.new(wx, wy);        dCrust.Size  = Vector2.new(WW, WH);      dCrust.Visible  = true
-    dBrd.Position    = Vector2.new(wx+1, wy+1);    dBrd.Size    = Vector2.new(WW-2, WH-2);  dBrd.Visible    = true
-    dBG.Position     = Vector2.new(wx+2, wy+2);    dBG.Size     = Vector2.new(WW-4, WH-4);  dBG.Visible     = true
-    dTitleBG.Position= Vector2.new(wx+2, wy+2);    dTitleBG.Size= Vector2.new(WW-4, TH-2);  dTitleBG.Visible= true
-    dAccBar.Position = Vector2.new(wx+2, wy+TH-2); dAccBar.Size = Vector2.new(WW-4, 2);      dAccBar.Visible = true
-    dTitle.Position  = Vector2.new(wx+10, wy+8);   dTitle.Visible = true
-
-    -- Close
-    dCloseBG.Position = Vector2.new(wx+WW-30, wy+5);  dCloseBG.Size = Vector2.new(22,18); dCloseBG.Visible = true
-    dCloseTx.Position = Vector2.new(wx+WW-25, wy+8);  dCloseTx.Visible = true
+    dCrust.Position=Vector2.new(wx,wy);       dCrust.Size=Vector2.new(WW,WH);     dCrust.Visible=true
+    dBrd.Position=Vector2.new(wx+1,wy+1);     dBrd.Size=Vector2.new(WW-2,WH-2);   dBrd.Visible=true
+    dBG.Position=Vector2.new(wx+2,wy+2);      dBG.Size=Vector2.new(WW-4,WH-4);    dBG.Visible=true
+    dTitleBG.Position=Vector2.new(wx+2,wy+2); dTitleBG.Size=Vector2.new(WW-4,TH-2); dTitleBG.Visible=true
+    dAccBar.Position=Vector2.new(wx+2,wy+TH-2); dAccBar.Size=Vector2.new(WW-4,2); dAccBar.Visible=true
+    dTitle.Position=Vector2.new(wx+10,wy+8);  dTitle.Visible=true
+    dCloseBG.Position=Vector2.new(wx+WW-30,wy+5); dCloseBG.Size=Vector2.new(22,18); dCloseBG.Visible=true
+    dCloseTx.Position=Vector2.new(wx+WW-25,wy+8); dCloseTx.Visible=true
 
     -- Answer box
-    local ansY = wy + TH + PAD
-    local ansH = 90
-    dAnsBox.Position = Vector2.new(wx+PAD, ansY);       dAnsBox.Size = Vector2.new(WW-PAD*2, ansH); dAnsBox.Visible = true
-    dAnsBrd.Position = Vector2.new(wx+PAD, ansY);       dAnsBrd.Size = Vector2.new(WW-PAD*2, ansH); dAnsBrd.Visible = true
-    dAnsLbl.Position = Vector2.new(wx+PAD+8, ansY+6);  dAnsLbl.Visible = true
+    local ansY = wy+TH+PAD; local ansH = 95
+    dAnsBox.Position=Vector2.new(wx+PAD,ansY); dAnsBox.Size=Vector2.new(WW-PAD*2,ansH); dAnsBox.Visible=true
+    dAnsBrd.Position=Vector2.new(wx+PAD,ansY); dAnsBrd.Size=Vector2.new(WW-PAD*2,ansH); dAnsBrd.Visible=true
+    dAnsLbl.Position=Vector2.new(wx+PAD+8,ansY+6); dAnsLbl.Visible=true
 
-    if currentAnswer == true then
-        dAnsText.Text  = "TRUE"
-        dAnsText.Color = GREEN
-        dAnsBox.Color  = Color3.fromRGB(10, 40, 20)
-    elseif currentAnswer == false then
-        dAnsText.Text  = "FALSE"
-        dAnsText.Color = RED
-        dAnsBox.Color  = Color3.fromRGB(40, 10, 10)
+    if asking then
+        dAnsText.Text="..."; dAnsText.Color=ACC; dAnsBox.Color=SURF
+    elseif currentAnswer==true then
+        dAnsText.Text="TRUE"; dAnsText.Color=GREEN; dAnsBox.Color=Color3.fromRGB(8,35,16)
+    elseif currentAnswer==false then
+        dAnsText.Text="FALSE"; dAnsText.Color=RED; dAnsBox.Color=Color3.fromRGB(35,8,8)
     else
-        dAnsText.Text  = "?"
-        dAnsText.Color = YELLOW
-        dAnsBox.Color  = SURF
+        dAnsText.Text="?"; dAnsText.Color=YELLOW; dAnsBox.Color=SURF
     end
-    dAnsText.Position = Vector2.new(wx + WW/2 - 30, ansY + 25)
-    dAnsText.Visible  = true
+    dAnsText.Position=Vector2.new(wx+WW/2-35,ansY+26); dAnsText.Visible=true
 
     -- Question box
-    local qY = ansY + ansH + 8
-    local qH = WH - TH - PAD - ansH - 8 - PAD - 20
-    dQBox.Position  = Vector2.new(wx+PAD, qY);      dQBox.Size  = Vector2.new(WW-PAD*2, qH); dQBox.Visible  = true
-    dQBrd.Position  = Vector2.new(wx+PAD, qY);      dQBrd.Size  = Vector2.new(WW-PAD*2, qH); dQBrd.Visible  = true
-    dQLbl.Position  = Vector2.new(wx+PAD+8, qY+6); dQLbl.Visible = true
-
-    local displayQ = currentQ == "" and "Waiting for question..." or wrapText(currentQ, 55)
-    dQText.Text     = displayQ
-    dQText.Position = Vector2.new(wx+PAD+8, qY+20)
-    dQText.Visible  = true
+    local qY=ansY+ansH+8; local qH=WH-TH-PAD-ansH-8-PAD-20
+    dQBox.Position=Vector2.new(wx+PAD,qY);   dQBox.Size=Vector2.new(WW-PAD*2,qH); dQBox.Visible=true
+    dQBrd.Position=Vector2.new(wx+PAD,qY);   dQBrd.Size=Vector2.new(WW-PAD*2,qH); dQBrd.Visible=true
+    dQLbl.Position=Vector2.new(wx+PAD+8,qY+6); dQLbl.Visible=true
+    dQText.Text=lastQuestion=="" and "Waiting for question..." or wrapText(lastQuestion,58)
+    dQText.Position=Vector2.new(wx+PAD+8,qY+20); dQText.Visible=true
 
     -- Status bar
-    local stY = wy + WH - 18
-    dStatusBG.Position = Vector2.new(wx+2, stY);    dStatusBG.Size = Vector2.new(WW-4, 16); dStatusBG.Visible = true
-    local statusStr
-    if currentAnswer ~= nil then
-        statusStr = "Match found  |  Drag title to move  |  X to close"
-    elseif currentQ ~= "" and currentQ ~= "failed to fetch text" then
-        statusStr = "No match in CustomQuestions  |  Question may be server-side only"
-    else
-        statusStr = "Waiting for round to start..."
-    end
-    dStatusTx.Text     = statusStr
-    dStatusTx.Position = Vector2.new(wx+PAD, stY+2)
-    dStatusTx.Visible  = true
+    local stY=wy+WH-18
+    dStatusBG.Position=Vector2.new(wx+2,stY); dStatusBG.Size=Vector2.new(WW-4,16); dStatusBG.Visible=true
+    local status
+    if WORKER_URL=="" then status="AI disabled — add WORKER_URL to enable"
+    elseif asking then status="Asking AI..."
+    elseif currentAnswer~=nil then status="AI answered  |  drag to move  |  X to close"
+    elseif lastQuestion~="" then status="Waiting for AI response..."
+    else status="Waiting for question..." end
+    dStatusTx.Text=status; dStatusTx.Position=Vector2.new(wx+PAD,stY+2); dStatusTx.Visible=true
 end
 
 local function destroy()
-    local all = {dCrust,dBrd,dBG,dTitleBG,dAccBar,dTitle,dCloseBG,dCloseTx,dAnsBox,dAnsBrd,dAnsText,dAnsLbl,dQBox,dQBrd,dQText,dQLbl,dStatusBG,dStatusTx}
-    for _, d in ipairs(all) do pcall(function() d:Remove() end) end
+    local all={dCrust,dBrd,dBG,dTitleBG,dAccBar,dTitle,dCloseBG,dCloseTx,dAnsBox,dAnsBrd,dAnsText,dAnsLbl,dQBox,dQBrd,dQText,dQLbl,dStatusBG,dStatusTx,dLoadTx}
+    for _,d in ipairs(all) do pcall(function() d:Remove() end) end
 end
 
--- ============================================================
--- RUN
--- ============================================================
-print("[TrueOrFalseHub] Loaded.")
-while running do
-    pcall(step)
-    task.wait()
-end
+print("[TrueOrFalseHub] Loaded. Worker: " .. (WORKER_URL=="" and "NOT SET" or "active"))
+while running do pcall(step); task.wait() end
 destroy()
 print("[TrueOrFalseHub] Closed.")
