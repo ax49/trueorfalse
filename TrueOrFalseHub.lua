@@ -170,7 +170,13 @@ local function step()
     end
 
     -- Re-find SIGN if lost (map rotation)
-    if not SIGN_PATH then SIGN_PATH = findSign() end
+    if not SIGN_PATH or not pcall(function() return SIGN_PATH.Parent end) then
+        SIGN_PATH = nil
+        task.wait(3) -- wait for new map to load
+        SIGN_PATH = findSign()
+        lastQuestion = "" -- reset so new map question triggers fresh lookup
+        currentAnswer = nil
+    end
 
     -- Read question
     local currentQ = ""
