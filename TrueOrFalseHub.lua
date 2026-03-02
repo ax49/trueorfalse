@@ -6,7 +6,16 @@
 -- CONFIG - replace with your worker URL when ready
 -- ============================================================
 local WORKER_URL = "https://billowing-sun-30dd.azizxqa.workers.dev" -- e.g. "https://your-worker.workers.dev"
-local SIGN_PATH = game.Workspace.CityMap.Model.screen.SurfaceGui.SIGN
+-- Dynamically find SIGN so it works on any map
+local function findSign()
+    for _, v in ipairs(game.Workspace:GetDescendants()) do
+        if v:IsA("TextLabel") and v.Name == "SIGN" then
+            return v
+        end
+    end
+    return nil
+end
+local SIGN_PATH = findSign()
 local QUESTIONS_FOLDER = game.Workspace.CustomQuestions
 
 -- ============================================================
@@ -164,6 +173,8 @@ local function step()
     end
 
     -- ---- READ QUESTION ----
+    -- Re-find SIGN if lost (map change)
+    if not SIGN_PATH then SIGN_PATH = findSign() end
     local ok, currentQ = pcall(function() return SIGN_PATH.Text end)
     if not ok or not currentQ then currentQ = "" end
 
